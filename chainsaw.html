@@ -103,9 +103,23 @@
     function spawnSpeedItem(x, y) {
       // 20%の確率でスピードアップアイテムを生成
       if (Math.random() < 0.2) {
+        // プレイヤーから離れた位置にアイテムを配置
+        let itemX, itemY;
+        const margin = 100; // プレイヤーからの最小距離
+        
+        // プレイヤーから離れた位置を計算
+        const angle = Math.random() * Math.PI * 2;
+        const distance = rand(margin, margin + 150);
+        itemX = player.x + Math.cos(angle) * distance;
+        itemY = player.y + Math.sin(angle) * distance;
+        
+        // 画面内に収める
+        itemX = clamp(itemX, 50, window.innerWidth - 50);
+        itemY = clamp(itemY, 50, window.innerHeight - 50);
+        
         speedItems.push({
-          x: x,
-          y: y,
+          x: itemX,
+          y: itemY,
           r: 12,
           alive: true,
           pulse: 0,
@@ -248,10 +262,17 @@
 
       // enemy spawn pacing: more aggressive as time goes
       spawnCooldown -= dt;
-      const desired = 8 + Math.floor((45 - state.time)/8); // より早く敵が増える
+      const timeProgress = (30 - state.time) / 30; // 0.0 to 1.0
+      const baseEnemies = 3; // 初期の敵の数
+      const maxEnemies = 15; // 最大の敵の数
+      const desired = Math.floor(baseEnemies + (maxEnemies - baseEnemies) * timeProgress);
+      
       if(enemies.length < desired && spawnCooldown<=0){
         spawnEnemy();
-        spawnCooldown = rand(0.15, 0.5); // より短い間隔
+        // 時間経過でスポーン間隔を短くする
+        const minCooldown = 0.1; // 最小間隔
+        const maxCooldown = 0.8; // 最大間隔
+        spawnCooldown = maxCooldown - (maxCooldown - minCooldown) * timeProgress;
       }
 
       // update enemies
@@ -267,14 +288,20 @@
       // chainsaw contact logic: if holding space and enemy within arc in front of player
       if(player.sawing){
         const reach = 48; // contact radius beyond player
-        const arc = 0.95; // radians (~55deg each side)
+        const arc = 1.2; // radians (~69deg each side) - より広い範囲
         const px = player.x + Math.cos(player.angle)*reach;
         const py = player.y + Math.sin(player.angle)*reach;
+        
         for(const e of enemies){
           if(!e.alive) continue;
+          
+          // プレイヤーから敵への距離
+          const distToPlayer = Math.hypot(e.x - player.x, e.y - player.y);
+          
+          // チェンソーの範囲内かチェック
           const d = Math.hypot(e.x - px, e.y - py);
-          if(d < e.r + player.sawLen){
-            // angle check
+          if(d < e.r + player.sawLen || distToPlayer < e.r + player.radius){
+            // 角度チェック - より正確な判定
             const angTo = Math.atan2(e.y - player.y, e.x - player.x);
             let da = Math.atan2(Math.sin(angTo - player.angle), Math.cos(angTo - player.angle));
             if(Math.abs(da) < arc){
@@ -329,7 +356,16 @@
       // cull dead enemies off screen and keep list short
       for(let i=enemies.length-1;i>=0;i--){
         const e = enemies[i];
-        if(!e.alive && rand(0,1) < 0.02){ enemies.splice(i,1); }
+        // 死亡した敵を確実に削除
+        if(!e.alive) {
+          enemies.splice(i, 1);
+          continue;
+        }
+        // 画面外に出た敵も削除（パフォーマンス向上）
+        if(e.x < -100 || e.x > window.innerWidth + 100 || 
+           e.y < -100 || e.y > window.innerHeight + 100) {
+          enemies.splice(i, 1);
+        }
       }
 
       // UI tick
@@ -565,7 +601,7 @@
     }
 
     function reset(hard){
-      state.time = 45.0;
+      state.time = 30.0;
       state.score = 0;
       state.combo = 1; state.comboTimer=0;
       state.speedBoost = 1.0; state.speedBoostTimer = 0;
@@ -577,7 +613,7 @@
         player.vx=player.vy=0; 
       }
       scorePill.textContent = 'SCORE 0';
-      timePill.textContent = 'TIME 45.0';
+      timePill.textContent = 'TIME 30.0';
       comboPill.textContent = 'COMBO x1';
     }
 
