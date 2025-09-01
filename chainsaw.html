@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chainsaw Slash — HTML5 Canvas</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0b0b10;
+      color: #e6e6f0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    #ui {
+      position: fixed; inset: 0; pointer-events: none; display: grid;
+      grid-template-rows: auto 1fr auto; padding: 12px;
+    }
+    #topbar { display:flex; gap:16px; align-items:center; }
+    .pill { background:#141420; border:1px solid #2b2b44; padding:6px 10px; border-radius:999px; font-size:12px; }
+    #help { place-self:end; opacity:.9; font-size:12px; line-height:1.4; }
+    #centerMsg { place-self:center; text-align:center; }
+    #centerMsg h1 { margin:0 0 12px; font-size:28px; letter-spacing:.5px; }
+    #btn { display:inline-block; padding:10px 16px; border-radius:12px; border:1px solid #3a3a60; background:#1a1a2b; cursor:pointer; pointer-events:auto; }
+    #btn:hover { filter:brightness(1.1); }
+    canvas { display:block; width:100vw; height:100vh; }
+    a { color:#9ad; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="ui">
+    <div id="topbar">
+      <div class="pill" id="scorePill">SCORE 0</div>
+      <div class="pill" id="timePill">TIME 45.0</div>
+      <div class="pill" id="comboPill">COMBO x1</div>
+      <div class="pill">WASD で移動 / マウスで照準 / スペース長押しで切断</div>
+    </div>
+    <div id="centerMsg">
+      <h1>CHAINSAW SLASH</h1>
+      <div style="opacity:.85;margin-bottom:12px">45秒の制限時間でチェンソーで敵を切り裂け！
+        <br>スペース長押しで切断ゲージを満たすと撃破。緑のアイテムでスピードアップ！
+      </div>
+      <div id="btn">▶︎ START</div>
+    </div>
+    <div id="help">
+      <div class="pill" style="display:inline-block">P で一時停止 / R でリスタート</div>
+    </div>
+  </div>
+
+  <script>
+    // ===== Utility helpers =====
+    const rand = (a,b)=>Math.random()*(b-a)+a;
+    const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+    const lerp=(a,b,t)=>a+(b-a)*t;
+
+    // ===== Canvas setup =====
+    const cvs = document.getElementById('game');
+    const ctx = cvs.getContext('2d');
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+
+    function resize(){
+      cvs.width = window.innerWidth * DPR;
+      cvs.height = window.innerHeight * DPR;
+      ctx.setTransform(DPR,0,0,DPR,0,0); // draw in CSS pixels
+    }
+    window.addEventListener('resize', resize);
+    
+    // DOMContentLoadedを待ってから初期化
+    document.addEventListener('DOMContentLoaded', function() {
+      resize();
+      initGame();
+    });
+
+    // ===== Game state =====
+    const state = {
+      running: false,
+      paused: false,
+      time: 45.0, // 時間を45秒に短縮
+      score: 0,
+      combo: 1,
+      comboTimer: 0,
+      best: 0,
+      speedBoost: 1.0, // スピードブースト倍率
+      speedBoostTimer: 0, // スピードブースト残り時間
+    };
+
+    // ===== Player =====
+    const player = {
+      x: 0,
+      y: 0,
+      vx: 0, vy: 0,
+      speed: 290,
+      angle: 0,
+      radius: 16,
+      sawing: false,
+      sawLen: 42, // visual bar length
+      sawWidth: 12,
+    };
+
+    // ===== Speed Boost Items =====
+    const speedItems = [];
+    function spawnSpeedItem(x, y) {
+      // 20%の確率でスピードアップアイテムを生成
+      if (Math.random() < 0.2) {
+        speedItems.push({
+          x: x,
+          y: y,
+          r: 12,
+          alive: true,
+          pulse: 0,
+          collected: false
+        });
+      }
+    }
+
+    function updateSpeedItems(dt) {
+      for (let i = speedItems.length - 1; i >= 0; i--) {
+        const item = speedItems[i];
+        if (!item.alive) {
+          speedItems.splice(i, 1);
+          continue;
+        }
+        
+        // パルスアニメーション
+        item.pulse += dt * 3;
+        
+        // プレイヤーとの衝突判定
+        const dist = Math.hypot(item.x - player.x, item.y - player.y);
+        if (dist < item.r + player.radius && !item.collected) {
+          item.collected = true;
+          item.alive = false;
+          
+          // スピードブースト効果
+          state.speedBoost = 2.0; // 2倍速
+          state.speedBoostTimer = 8.0; // 8秒間持続
+          
+          // 効果音
+          beep(440, 0.1, 'sine', 0.05);
+          beep(660, 0.1, 'sine', 0.05);
+          
+          // パーティクル効果
+          for (let j = 0; j < 15; j++) {
+            const angle = (j / 15) * Math.PI * 2;
+            const speed = rand(150, 300);
+            particles.push({
+              x: item.x,
+              y: item.y,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              life: rand(0.5, 1.2),
+              t: 0,
+              size: rand(2, 4),
+              color: '#00ff88' // 緑色のパーティクル
+            });
+          }
+        }
+      }
+    }
+
+    // ===== Enemies =====
+    const enemies = [];
+    function spawnEnemy(){
+      // Spawn from off-screen edges
+      const margin = 60;
+      const side = Math.floor(rand(0,4));
+      let x, y;
+      if(side===0){ x = -margin; y = rand(0, window.innerHeight); }
+      if(side===1){ x = window.innerWidth+margin; y = rand(0, window.innerHeight); }
+      if(side===2){ x = rand(0, window.innerWidth); y = -margin; }
+      if(side===3){ x = rand(0, window.innerWidth); y = window.innerHeight+margin; }
+      const spd = rand(40, 80);
+      const hp  = rand(0.8, 1.4); // time-to-saw (seconds under contact)
+      enemies.push({
+        x,y, r: 18, speed: spd, targetBias: rand(0.8,1.2),
+        hp, hpMax: hp, bleeding: 0, alive: true, flash: 0,
+      });
+    }
+
+    // ===== Particles (blood & sparks) =====
+    const particles = [];
+    function addBlood(x,y,dir,intensity=10){
+      for(let i=0;i<intensity;i++){
+        const a = dir + rand(-0.6,0.6);
+        const v = rand(100, 300);
+        particles.push({ 
+          x, y, 
+          vx: Math.cos(a)*v, 
+          vy: Math.sin(a)*v, 
+          life: rand(0.2,0.8), 
+          t:0, 
+          size: rand(1,3),
+          color: '#b3192a' // デフォルトは赤色
+        });
+      }
+    }
+
+    // ===== Spawning pacing =====
+    let spawnCooldown = 0;
+
+    // ===== Main loop =====
+    let last = performance.now();
+    function loop(now){
+      const dt = Math.min(0.033, (now - last)/1000);
+      last = now;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function update(dt){
+      if(!state.running || state.paused){ return; }
+
+      // time & end condition
+      state.time = Math.max(0, state.time - dt);
+      if(state.time<=0) { endGame(); return; }
+
+      // combo timer decay
+      if(state.combo>1){
+        state.comboTimer -= dt;
+        if(state.comboTimer<=0){ state.combo = 1; comboPill.textContent = 'COMBO x1'; }
+      }
+
+      // speed boost timer
+      if(state.speedBoostTimer > 0) {
+        state.speedBoostTimer -= dt;
+        if(state.speedBoostTimer <= 0) {
+          state.speedBoost = 1.0; // 通常速度に戻る
+        }
+      }
+
+      // player aim
+      const dx = mouse.x - player.x; const dy = mouse.y - player.y;
+      player.angle = Math.atan2(dy, dx);
+
+      // movement (with speed boost)
+      let ax=0, ay=0;
+      if(keys.has('KeyW')||keys.has('ArrowUp')) ay -= 1;
+      if(keys.has('KeyS')||keys.has('ArrowDown')) ay += 1;
+      if(keys.has('KeyA')||keys.has('ArrowLeft')) ax -= 1;
+      if(keys.has('KeyD')||keys.has('ArrowRight')) ax += 1;
+      const len = Math.hypot(ax,ay) || 1;
+      ax/=len; ay/=len;
+      const currentSpeed = player.speed * state.speedBoost;
+      player.vx = ax*currentSpeed; player.vy = ay*currentSpeed;
+      player.x = clamp(player.x + player.vx*dt, 0, window.innerWidth);
+      player.y = clamp(player.y + player.vy*dt, 0, window.innerHeight);
+
+      // enemy spawn pacing: more aggressive as time goes
+      spawnCooldown -= dt;
+      const desired = 8 + Math.floor((45 - state.time)/8); // より早く敵が増える
+      if(enemies.length < desired && spawnCooldown<=0){
+        spawnEnemy();
+        spawnCooldown = rand(0.15, 0.5); // より短い間隔
+      }
+
+      // update enemies
+      for(const e of enemies){
+        if(!e.alive) continue;
+        const toP = Math.atan2(player.y - e.y, player.x - e.x);
+        const v = e.speed * e.targetBias;
+        e.x += Math.cos(toP)*v*dt;
+        e.y += Math.sin(toP)*v*dt;
+        e.flash = Math.max(0, e.flash - dt);
+      }
+
+      // chainsaw contact logic: if holding space and enemy within arc in front of player
+      if(player.sawing){
+        const reach = 48; // contact radius beyond player
+        const arc = 0.95; // radians (~55deg each side)
+        const px = player.x + Math.cos(player.angle)*reach;
+        const py = player.y + Math.sin(player.angle)*reach;
+        for(const e of enemies){
+          if(!e.alive) continue;
+          const d = Math.hypot(e.x - px, e.y - py);
+          if(d < e.r + player.sawLen){
+            // angle check
+            const angTo = Math.atan2(e.y - player.y, e.x - player.x);
+            let da = Math.atan2(Math.sin(angTo - player.angle), Math.cos(angTo - player.angle));
+            if(Math.abs(da) < arc){
+              // sawing: damage equals time under contact
+              e.hp -= dt;
+              e.bleeding = Math.min(1, e.bleeding + dt*2);
+              e.flash = 0.05;
+              // particles
+              addBlood(e.x, e.y, player.angle + Math.PI, 3);
+              if(e.hp <= 0){
+                e.alive = false;
+                // score: base 100 * combo
+                const add = Math.floor(100 * state.combo);
+                state.score += add;
+                scorePill.textContent = 'SCORE ' + state.score;
+                // extend time slightly for killflow (but less than before)
+                state.time = Math.min(99.9, state.time + 0.8);
+                // combo
+                state.combo = Math.min(10, state.combo + 0.25);
+                state.comboTimer = 3.0; // window to keep combo
+                comboPill.textContent = 'COMBO x' + state.combo.toFixed(2);
+                // death burst
+                addBlood(e.x, e.y, player.angle + Math.PI, 24);
+                
+                // スピードアップアイテムを生成
+                spawnSpeedItem(e.x, e.y);
+              }
+            } else {
+              // not in arc, bleeding cools down slowly
+              e.bleeding = Math.max(0, e.bleeding - dt*0.5);
+            }
+          } else {
+            e.bleeding = Math.max(0, e.bleeding - dt*0.5);
+          }
+        }
+      } else {
+        // no contact, cool down bleeding overlay
+        for(const e of enemies){ e.bleeding = Math.max(0, e.bleeding - dt*0.6); }
+      }
+
+      // update speed items
+      updateSpeedItems(dt);
+
+      // particles integration
+      for(let i=particles.length-1;i>=0;i--){
+        const p = particles[i];
+        p.t += dt; if(p.t>p.life){ particles.splice(i,1); continue; }
+        p.vy += 1200*dt*0.6; // gravity-ish
+        p.x += p.vx*dt; p.y += p.vy*dt;
+      }
+
+      // cull dead enemies off screen and keep list short
+      for(let i=enemies.length-1;i>=0;i--){
+        const e = enemies[i];
+        if(!e.alive && rand(0,1) < 0.02){ enemies.splice(i,1); }
+      }
+
+      // UI tick
+      timePill.textContent = 'TIME ' + state.time.toFixed(1);
+    }
+
+    function render(){
+      // background grid
+      ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+      const t = performance.now()*0.0002;
+      const grid = 32; ctx.globalAlpha=1;
+      ctx.fillStyle = '#0e0e16'; ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+      ctx.strokeStyle = '#141428'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for(let x=(t%1)*grid; x<window.innerWidth; x+=grid){ ctx.moveTo(x,0); ctx.lineTo(x,window.innerHeight); }
+      for(let y=((t*1.3)%1)*grid; y<window.innerHeight; y+=grid){ ctx.moveTo(0,y); ctx.lineTo(window.innerWidth,y); }
+      ctx.stroke();
+
+      // player
+      drawPlayer();
+
+      // enemies
+      for(const e of enemies){ drawEnemy(e); }
+
+      // speed items
+      for(const item of speedItems){ drawSpeedItem(item); }
+
+      // particles
+      for(const p of particles){
+        const lifeT = 1 - (p.t / p.life);
+        ctx.globalAlpha = clamp(lifeT, 0, 1);
+        ctx.fillStyle = p.color || '#b3192a';
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+        ctx.globalAlpha = 1;
+      }
+
+      // vignette
+      const grd = ctx.createRadialGradient(window.innerWidth/2, window.innerHeight/2, Math.min(window.innerWidth,window.innerHeight)*0.2,
+                                           window.innerWidth/2, window.innerHeight/2, Math.max(window.innerWidth,window.innerHeight)*0.7);
+      grd.addColorStop(0,'rgba(0,0,0,0)');
+      grd.addColorStop(1,'rgba(0,0,0,0.35)');
+      ctx.fillStyle = grd; ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+    }
+
+    function drawSpeedItem(item) {
+      ctx.save();
+      ctx.translate(item.x, item.y);
+      
+      // パルスアニメーション
+      const pulse = Math.sin(item.pulse) * 0.3 + 1.0;
+      const size = item.r * pulse;
+      
+      // 外側の光るリング
+      ctx.globalAlpha = 0.6;
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, size + 2, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      // 内側のアイテム
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#00ff88';
+      ctx.beginPath();
+      ctx.arc(0, 0, size, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // 中央のアイコン
+      ctx.globalAlpha = 1.0;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(-3, -6, 6, 12);
+      ctx.fillRect(-6, -3, 12, 6);
+      
+      ctx.restore();
+    }
+
+    function drawPlayer(){
+      // body
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      ctx.rotate(player.angle);
+      
+      // スピードブースト効果の表示
+      if (state.speedBoost > 1.0) {
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = '#00ff88';
+        ctx.beginPath();
+        ctx.arc(0, 0, player.radius + 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+      }
+      
+      // torso
+      ctx.fillStyle = '#e6e6f0';
+      roundRect(ctx, -16, -12, 24, 24, 6); ctx.fill();
+      // helmet
+      ctx.fillStyle = '#9aa0ff';
+      roundRect(ctx, -10, -18, 20, 12, 6); ctx.fill();
+      // chainsaw (bar)
+      const sw = player.sawWidth;
+      const sl = player.sawLen;
+      ctx.fillStyle = '#f6a603';
+      roundRect(ctx, 8, -sw/2, sl, sw, 6); ctx.fill();
+      // chain edge
+      ctx.fillStyle = '#3a3a60';
+      ctx.fillRect(8+sl-4, -sw/2-2, 6, sw+4);
+      // muzzle sparks while sawing
+      if(player.sawing){
+        ctx.fillStyle = '#ffdd55';
+        for(let i=0;i<3;i++){
+          const sx = 8+sl + rand(0,6);
+          const sy = rand(-sw/2-2, sw/2+2);
+          ctx.fillRect(sx, sy, 2, 2);
+        }
+      }
+      ctx.restore();
+    }
+
+    function drawEnemy(e){
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      // body (with flash when damaged)
+      const base = '#7bd3d6';
+      ctx.fillStyle = e.flash>0 ? '#ffffff' : base;
+      roundRect(ctx, -e.r, -e.r, e.r*2, e.r*2, 8); ctx.fill();
+      // face
+      ctx.fillStyle = '#0b0b10';
+      ctx.fillRect(-6,-2,4,4); ctx.fillRect(2,-2,4,4);
+      ctx.fillRect(-4,6,8,3);
+      // bleeding overlay
+      if(e.bleeding>0){
+        ctx.globalAlpha = clamp(e.bleeding*0.85, 0, 0.85);
+        ctx.fillStyle = '#b3192a';
+        roundRect(ctx, -e.r, -e.r, e.r*2, e.r*2, 8); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // hp ring
+      const ratio = e.hp / e.hpMax;
+      ctx.beginPath();
+      ctx.strokeStyle = '#e6e6f0';
+      ctx.lineWidth = 2;
+      ctx.arc(0,0,e.r+6,-Math.PI/2, -Math.PI/2 + Math.PI*2*ratio);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function roundRect(ctx, x, y, w, h, r){
+      const rr = Math.min(r, Math.abs(w/2), Math.abs(h/2));
+      ctx.beginPath();
+      ctx.moveTo(x+rr, y);
+      ctx.lineTo(x+w-rr, y);
+      ctx.quadraticCurveTo(x+w, y, x+w, y+rr);
+      ctx.lineTo(x+w, y+h-rr);
+      ctx.quadraticCurveTo(x+w, y+h, x+w-rr, y+h);
+      ctx.lineTo(x+rr, y+h);
+      ctx.quadraticCurveTo(x, y+h, x+rr, y+h);
+      ctx.lineTo(x, y+rr);
+      ctx.quadraticCurveTo(x, y, x+rr, y);
+      ctx.closePath();
+    }
+
+    // ===== Input =====
+    const keys = new Set();
+    document.addEventListener('keydown', e=>{
+      if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowLeft','ArrowDown','ArrowRight','KeyP','KeyR','Space'].includes(e.code)) e.preventDefault();
+      if(e.code==='KeyP'){ togglePause(); }
+      else if(e.code==='KeyR'){ reset(true); }
+      else if(e.code==='Space'){ 
+        keys.add(e.code);
+        player.sawing = true;
+      }
+      else keys.add(e.code);
+    });
+    
+    document.addEventListener('keyup', e=> {
+      if(e.code==='Space') {
+        keys.delete(e.code);
+        player.sawing = false;
+      } else {
+        keys.delete(e.code);
+      }
+    });
+
+    // Mouse
+    let mouse={x: 0, y: 0, down:false};
+    document.addEventListener('mousemove', e=>{ 
+      mouse.x=e.clientX; 
+      mouse.y=e.clientY; 
+    });
+
+    // UI elements
+    const scorePill = document.getElementById('scorePill');
+    const timePill  = document.getElementById('timePill');
+    const comboPill = document.getElementById('comboPill');
+    const centerMsg = document.getElementById('centerMsg');
+    const startBtn  = document.getElementById('btn');
+
+    function initGame() {
+      // プレイヤーの初期位置を設定
+      player.x = window.innerWidth/2;
+      player.y = window.innerHeight/2;
+      mouse.x = window.innerWidth/2;
+      mouse.y = window.innerHeight/2;
+      
+      startBtn.addEventListener('click', ()=>{ if(!state.running) startGame(); });
+    }
+
+    function startGame(){
+      reset(false);
+      state.running = true;
+      centerMsg.style.display='none';
+    }
+    
+    function endGame(){
+      state.running=false;
+      state.paused=false;
+      state.best = Math.max(state.best, state.score);
+      centerMsg.style.display='block';
+      centerMsg.innerHTML = `<h1>RESULT</h1>
+        <div style="margin:6px 0 14px">SCORE <b>${state.score}</b> ・ BEST <b>${state.best}</b></div>
+        <div id="btn">▶︎ RESTART</div>`;
+      centerMsg.querySelector('#btn').addEventListener('click', ()=> startGame());
+    }
+    
+    function togglePause(){
+      if(!state.running) return;
+      state.paused=!state.paused;
+      centerMsg.style.display = state.paused? 'block':'none';
+      if(state.paused){
+        centerMsg.innerHTML = `<h1>PAUSED</h1><div id="btn">▶︎ RESUME</div>`;
+        centerMsg.querySelector('#btn').addEventListener('click', ()=> togglePause());
+      }
+    }
+
+    function reset(hard){
+      state.time = 45.0;
+      state.score = 0;
+      state.combo = 1; state.comboTimer=0;
+      state.speedBoost = 1.0; state.speedBoostTimer = 0;
+      enemies.length = 0; particles.length = 0; speedItems.length = 0;
+      spawnCooldown = 0;
+      if(hard){ 
+        player.x=window.innerWidth/2; 
+        player.y=window.innerHeight/2; 
+        player.vx=player.vy=0; 
+      }
+      scorePill.textContent = 'SCORE 0';
+      timePill.textContent = 'TIME 45.0';
+      comboPill.textContent = 'COMBO x1';
+    }
+
+    // ===== Minimal SFX using WebAudio (no assets) =====
+    const AC = new (window.AudioContext||window.webkitAudioContext)();
+    function beep(freq=220, dur=0.08, type='square', vol=0.03){
+      const t = AC.currentTime;
+      const o = AC.createOscillator();
+      const g = AC.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+      o.connect(g).connect(AC.destination);
+      o.start(t); o.stop(t+dur);
+    }
+    
+    // hook kill/beep to score changes
+    (function wrapScore(){
+      let lastScore = 0;
+      const obs = new MutationObserver(()=>{
+        const now = state.score;
+        if(now>lastScore){
+          beep(180,0.05,'sawtooth',0.03);
+          beep(360,0.06,'square',0.02);
+        }
+        lastScore = now;
+      });
+      obs.observe(scorePill, { childList:true });
+    })();
+
+    // Unlock audio on first user gesture
+    document.addEventListener('pointerdown', ()=>{ if(AC.state==='suspended') AC.resume(); }, { once:true });
+    
+    // ゲームループを開始
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
